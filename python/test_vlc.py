@@ -26,13 +26,26 @@ from PyQt4 import QtGui, QtCore
 
 from time import sleep
 
-from OSC import OSCServer, OSCClient, OSCMessage
+from OSC import OSCServer, OSCClient, OSCMessage, OSCClientError
 
+import socket
+import fcntl
+import struct
+
+def get_ip_address(ifname):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    return socket.inet_ntoa(fcntl.ioctl(
+        s.fileno(),
+        0x8915,
+        struct.pack('256s', ifname[:15])
+    )[20:24])
+
+print get_ip_address('wlan0')
 
 class OSCPlayer(QtGui.QMainWindow):
     """A simple Media Player using VLC and Qt
     """
-    def __init__(self, server, master=None):
+    def __init__(self, video_file, server, client, master=None):
         QtGui.QMainWindow.__init__(self, master)
         self.setWindowTitle("Media Player")
 
@@ -46,19 +59,73 @@ class OSCPlayer(QtGui.QMainWindow):
 
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
 
-        #events = self.mediaplayer.event_manager()
-        #events.event_attach(vlc.EventType.MediaPlayerTimeChanged, self.MediaProgressed)
+    	self.show()
+    	self.resize(500,500)
+    	self.videoframe.setWindowState(self.videoframe.windowState() & ~QtCore.Qt.WindowMinimized | QtCore.Qt.WindowActive)
+    	self.videoframe.setWindowFlags(QtCore.Qt.WindowStaysOnTopHint)
+    	self.videoframe.showFullScreen()
+    	self.videoframe.activateWindow()
+    	self.videoframe.raise_()
 
         #OSC Stuff
         self.server = server
+	self.server.addMsgHandler( "/ping", self.pingVideo )
         self.server.addMsgHandler( "/play", self.playVideo )
+        self.server.addMsgHandler( "/set", self.setVideo )
+        self.server.addMsgHandler( "/stop", self.stopVideo )
         self.server.addMsgHandler( "/pause", self.pauseVideo )
+        self.server.addMsgHandler( "/quit", self.quitVideo )
+        self.server.addMsgHandler( "/refresh", self.refreshVideo )
+
+        self.client = client
+
+        self.video_file = video_file
+        self.OpenFile(self.video_file)
+        sleep(.2)
+        self.mediaplayer.set_position(0)
+        self.PlayPause()
+
+
+    def pingVideo(self, path, tags, args, source):
+        print "/ping"
+        self.Play()
+        sleep(3)
+        self.Pause()
 
     def playVideo(self, path, tags, args, source):
+        print "/play"
+        self.setVideo(path, tags, args, source)
         self.Play()
+    
+    def setVideo(self, path, tags, args, source):
+        if len(args) > 0:
+            self.setVideoFile(args[0])
+
+    def stopVideo(self, path, tags, args, source):
+        print "/stop"
+        self.Stop()
 
     def pauseVideo(self, path, tags, args, source):
+        print "/pause"
         self.Pause()
+
+    def quitVideo(self, path, tags, args, source):
+        print "/quit"
+    	#self.videoframe.setWindowFlags(self.videoframe.windowFlags() & ~QtCore.Qt.WindowStaysOnTopHint)
+        self.videoframe.setWindowState(self.videoframe.windowState() & QtCore.Qt.WindowMinimized | ~QtCore.Qt.WindowActive)
+
+    def refreshVideo(self, path, tags, args, source):
+        print "/refresh"
+    	self.videoframe.setWindowState(self.videoframe.windowState() & ~QtCore.Qt.WindowMinimized | QtCore.Qt.WindowActive)
+    	#self.videoframe.setWindowFlags(QtCore.Qt.WindowStaysOnTopHint)
+    	#self.videoframe.showFullScreen()
+    	#self.videoframe.activateWindow()
+    	#self.videoframe.raise_()
+        self.Stop()
+
+    def setVideoFile(self, video_file):
+        self.video_file = filePath + '/' + video_file
+        self.OpenFile(self.video_file)
 
     def createUI(self):
         """Set up the user interface, signals & slots
@@ -72,51 +139,6 @@ class OSCPlayer(QtGui.QMainWindow):
         else:
             self.videoframe = QtGui.QFrame()
 
-        self.videoframe.setWindowFlags(QtCore.Qt.FramelessWindowHint)
-        #self.palette = self.videoframe.palette()
-        #self.palette.setColor (QtGui.QPalette.Window,
-        #                       QtGui.QColor(0,0,0))
-        #self.videoframe.setPalette(self.palette)
-        #self.videoframe.setAutoFillBackground(True)
-
-        '''
-        self.positionslider = QtGui.QSlider(QtCore.Qt.Horizontal, self)
-        self.positionslider.setToolTip("Position")
-        self.positionslider.setMaximum(1000)
-        self.connect(self.positionslider,
-                     QtCore.SIGNAL("sliderMoved(int)"), self.setPosition)
-
-        self.hbuttonbox = QtGui.QHBoxLayout()
-        self.playbutton = QtGui.QPushButton("Play")
-        self.hbuttonbox.addWidget(self.playbutton)
-        self.connect(self.playbutton, QtCore.SIGNAL("clicked()"),
-                     self.PlayPause)
-
-        self.stopbutton = QtGui.QPushButton("Stop")
-        self.hbuttonbox.addWidget(self.stopbutton)
-        self.connect(self.stopbutton, QtCore.SIGNAL("clicked()"),
-                     self.Stop)
-
-        self.hbuttonbox.addStretch(1)
-        self.volumeslider = QtGui.QSlider(QtCore.Qt.Horizontal, self)
-        self.volumeslider.setMaximum(100)
-        self.volumeslider.setValue(self.mediaplayer.audio_get_volume())
-        self.volumeslider.setToolTip("Volume")
-        self.hbuttonbox.addWidget(self.volumeslider)
-        self.connect(self.volumeslider,
-                     QtCore.SIGNAL("valueChanged(int)"),
-                     self.setVolume)
-        '''
-        self.vboxlayout = QtGui.QVBoxLayout()
-        self.vboxlayout.addWidget(self.videoframe)
-        '''
-        self.vboxlayout.addWidget(self.positionslider)
-        self.vboxlayout.addLayout(self.hbuttonbox)
-        '''
-        self.widget.setLayout(self.vboxlayout)
-
-        self.vboxlayout.setContentsMargins(0,0,0,0)
-
         open = QtGui.QAction("&Open", self)
         self.connect(open, QtCore.SIGNAL("triggered()"), self.OpenFile)
         exit = QtGui.QAction("&Exit", self)
@@ -127,17 +149,13 @@ class OSCPlayer(QtGui.QMainWindow):
         filemenu.addSeparator()
         filemenu.addAction(exit)
 
+        
+
         self.timer = QtCore.QTimer(self)
         self.timer.setInterval(200)
         self.connect(self.timer, QtCore.SIGNAL("timeout()"),
                      self.updateUI) 
-
-    '''
-    def MediaProgressed(self, event):        
-        if self.mediaplayer.get_time() > self.mediaplayer.get_length() - 1000:
-            self.PlayPause()
-            self.mediaplayer.set_time(0)
-    '''
+        self.timer.start()
 
     def PlayPause(self):
         """Toggle play/pause status
@@ -152,7 +170,6 @@ class OSCPlayer(QtGui.QMainWindow):
                 return
             self.mediaplayer.play()
             #self.playbutton.setText("Pause")
-            self.timer.start()
             self.isPaused = False
 
     def Play(self):
@@ -164,7 +181,6 @@ class OSCPlayer(QtGui.QMainWindow):
                 return
             self.mediaplayer.play()
             #self.playbutton.setText("Pause")
-            self.timer.start()
             self.isPaused = False
 
     def Pause(self):
@@ -178,8 +194,10 @@ class OSCPlayer(QtGui.QMainWindow):
     def Stop(self):
         """Stop player
         """
-        self.mediaplayer.stop()
+        #self.mediaplayer.stop()
         #self.playbutton.setText("Play")
+        self.mediaplayer.set_position(0)
+        self.Pause()
 
     def OpenFile(self, filename=None):
         """Open a media file in a MediaPlayer
@@ -213,8 +231,9 @@ class OSCPlayer(QtGui.QMainWindow):
         elif sys.platform == "darwin": # for MacOS
             self.mediaplayer.set_nsobject(self.videoframe.winId())
         self.PlayPause()
-        sleep(.1)
-        self.PlayPause()
+        #sleep(.03)
+        #self.mediaplayer.set_position(0)
+        #self.PlayPause()
 
     def setVolume(self, Volume):
         """Set the volume
@@ -232,6 +251,13 @@ class OSCPlayer(QtGui.QMainWindow):
         # (1000 should be enough)
 
     def updateUI(self):
+
+        m = OSCMessage("/test")
+        m.append("video")
+        try: 
+            self.client.send(m)
+        except OSCClientError:
+            print "Cannot connect to OSC Server"
         self.server.timed_out = False
         # handle all pending requests then return
         while not self.server.timed_out:
@@ -240,8 +266,12 @@ class OSCPlayer(QtGui.QMainWindow):
         if self.mediaplayer.get_time() > self.mediaplayer.get_length() - 300:
             self.mediaplayer.set_position(0)
 
-server = OSCServer( ("localhost", 57120) )
+ipAddress = get_ip_address('wlan0')
+server = OSCServer( (ipAddress, 8888) )
 server.timeout = 0
+
+client = OSCClient()
+client.connect( ("10.0.1.127", 9999) )
 
 def handle_timeout(self):
     self.timed_out = True
@@ -250,12 +280,9 @@ def handle_timeout(self):
 import types
 server.handle_timeout = types.MethodType(handle_timeout, server)
 
+filePath = os.path.abspath(os.path.dirname(sys.argv[0]))
+
 if __name__ == "__main__":
     app = QtGui.QApplication(sys.argv)
-    player = OSCPlayer(server)
-    player.showFullScreen()
-    player.setWindowState(player.windowState() & ~QtCore.Qt.WindowMinimized | QtCore.Qt.WindowActive)
-    #player.raise_()
-    if sys.argv[1:]:
-        player.OpenFile(sys.argv[1])
+    player = OSCPlayer(filePath + '/video.mp4', server, client)
     sys.exit(app.exec_())
